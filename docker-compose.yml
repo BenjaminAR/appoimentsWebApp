@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - SWAGGER_UI=true
+      - FRONTEND_URL=http://localhost:5173
+      - TZ=America/Mexico_City
+    command: sh -c "npm install && node server.js"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_PORT=5173
+    # Mismo flujo que el backend: instala paquetes nuevos e inicia Vite aceptando peticiones externas (--host)
+    command: sh -c "npm install && npm run dev -- --host"
+    depends_on:
+      - backend
