@@ -8,3 +8,4 @@ backend/.env
 backend/appointments-dealership-firebase-adminsdk-fbsvc-1ac6cb25fc.json
 backend/src/config/firebaseSDK.js
 backend/serviceAccountKey.json
+/deploy
