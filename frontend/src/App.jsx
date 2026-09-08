@@ -45,7 +45,9 @@ export default function App() {
           {/* Rutas Protegidas por Rol (Ejemplo Admin/Superadmin) */}
           <Route element={<ProtectedRoute allowedRoles={['admin', 'superadmin']} />}>
             {/* Aquí agregarás tus vistas de administración */}
-            <Route path="/admin-dashboard" element={<AdminDashboard />} />
+            {/* Logic on backend */}
+            {/* <Route path="/admin-dashboard" element={<AdminDashboard />} /> */}
+            
           </Route>
 
           {/* Redirección por defecto */}
