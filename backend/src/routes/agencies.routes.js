@@ -45,6 +45,63 @@ router.get('/me', authenticateToken, async (req, res, next) => {
 
 /**
  * @openapi
+ * /agencies/me:
+ *   patch:
+ *     summary: Actualizar el nombre de la agencia del usuario autenticado (Solo Admins)
+ *     tags:
+ *       - Agencias
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Agencia Motors S.A."
+ *     responses:
+ *       200:
+ *         description: Nombre de agencia actualizado correctamente.
+ *       400:
+ *         description: El nombre no puede estar vacío.
+ *       404:
+ *         description: Agencia no encontrada.
+ */
+router.patch('/me', authenticateToken, requireRole('admin', 'superadmin'), async (req, res, next) => {
+  try {
+    const { name } = req.body;
+    const agencyId = req.user.agencyId;
+
+    if (!agencyId) {
+      return res.status(400).json({ error: 'El usuario no tiene una agencia asignada.' });
+    }
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'El nombre de la agencia no puede estar vacío.' });
+    }
+
+    const agencyRef = db.collection('agencies').doc(agencyId);
+    const doc = await agencyRef.get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Agencia no encontrada.' });
+    }
+
+    const cleanName = name.trim();
+    await agencyRef.update({ name: cleanName });
+
+    res.json({ message: 'Nombre de agencia actualizado correctamente.', name: cleanName });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @openapi
  * /agencies/me/logo:
  *   patch:
  *     summary: Actualizar el logo de la agencia del usuario autenticado (Solo Admins)

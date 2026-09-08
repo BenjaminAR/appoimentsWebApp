@@ -6,13 +6,23 @@ import AppointmentDateTimePicker from '../components/AppointmentDateTimePicker';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../context/AuthContext';
 
-// Debe permanecer alineado con el enum de estado del backend: waiting | in_service | finished | canceled
+// Debe permanecer alineado con el enum de estado del backend: waiting | in_service | open | finished | canceled
 const STATUS_LABELS = {
-  waiting: 'Activa / En espera',
-  in_service: 'En atención',
+  waiting: 'Programada',
+  in_service: 'Activa',
+  open: 'Abierta',
   finished: 'Completada',
   canceled: 'Cancelada',
 };
+
+// Clases de color distintivas por estado para el badge de la tabla de administración
+const STATUS_BADGE_CLASSES = {
+  open: 'bg-blue-50 text-blue-600 border-blue-200',
+  in_service: 'bg-green-50 text-green-600 border-green-200',
+};
+const DEFAULT_STATUS_BADGE_CLASSES = 'bg-white text-gray-800 border-gray-300';
+
+const PAGE_SIZE = 10;
 
 const RESTRICTED_TABS = { configuracion: true, usuarios: true };
 
@@ -48,8 +58,15 @@ export default function AdminDashboard() {
     advisor: '',
   });
 
+  // Ordenamiento y paginación de la tabla de citas
+  const [sortColumn, setSortColumn] = useState(null);
+  const [sortDirection, setSortDirection] = useState('asc');
+  const [currentPage, setCurrentPage] = useState(1);
+
   // Configuración
   const [logoUrl, setLogoUrl] = useState('');
+  const [agencyName, setAgencyName] = useState('');
+  const [savingAgencyName, setSavingAgencyName] = useState(false);
   const [videosList, setVideosList] = useState([]);
   const [newVideoUrl, setNewVideoUrl] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
@@ -92,6 +109,7 @@ export default function AdminDashboard() {
       datetime: item.scheduledTime || item.datetime || item.date || '',
       advisor: item.advisorName || item.advisor || '',
       status: item.status || 'waiting',
+      celebrate: Boolean(item.celebrate),
     };
   };
 
@@ -125,6 +143,7 @@ export default function AdminDashboard() {
       if (agencyRes.data?.logoUrl) {
         setLogoUrl(agencyRes.data.logoUrl);
       }
+      setAgencyName(agencyRes.data?.name || '');
     } catch (err) {
       console.error('Error al cargar el perfil de la agencia:', err);
     }
@@ -262,11 +281,9 @@ export default function AdminDashboard() {
     e.preventDefault();
 
     const dateObj = dayjs(formData.datetime);
+    const isOpen = formData.status === 'open';
 
     const payload = {
-      date: dateObj.format('DD/MM/YYYY'),
-      time: dateObj.format('HH:mm'),
-      scheduledTime: dateObj.format(),
       activity: formData.reason,
       advisorName: formData.advisor,
       clientName: formData.clientName,
@@ -274,6 +291,13 @@ export default function AdminDashboard() {
       model: formData.model,
       status: formData.status,
     };
+
+    // Las citas "abiertas" no llevan horario asignado (walk-in)
+    if (!isOpen) {
+      payload.date = dateObj.format('DD/MM/YYYY');
+      payload.time = dateObj.format('HH:mm');
+      payload.scheduledTime = dateObj.format();
+    }
 
     try {
       if (editingAppointment) {
@@ -297,6 +321,68 @@ export default function AdminDashboard() {
       console.error('Error al eliminar cita:', err);
     }
   };
+
+  const handleToggleCelebrate = async (item, checked) => {
+    // Actualización optimista: refleja el checkbox de inmediato sin esperar la respuesta del servidor
+    setAppointments((prev) => prev.map((a) => (a.id === item.id ? { ...a, celebrate: checked } : a)));
+    try {
+      await api.put(`/appointments/${item.id}`, { celebrate: checked });
+    } catch (err) {
+      console.error('Error al actualizar "festejar":', err);
+      alert(err.response?.data?.error || 'No se pudo actualizar el festejo.');
+      setAppointments((prev) => prev.map((a) => (a.id === item.id ? { ...a, celebrate: !checked } : a)));
+    }
+  };
+
+  const handleSort = (column) => {
+    if (sortColumn === column) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
+
+  const getSortValue = (item, column) => {
+    switch (column) {
+      case 'clientName': return item.clientName || '';
+      case 'vehicle': return formatVehicle(item.vehicle);
+      case 'reason': return item.reason || '';
+      case 'datetime': return item.status === 'open' ? '' : (item.datetime || '');
+      case 'advisor': return item.advisor || '';
+      case 'status': return STATUS_LABELS[item.status] || item.status || '';
+      default: return '';
+    }
+  };
+
+  const sortedAppointments = React.useMemo(() => {
+    if (!sortColumn) return appointments;
+    const sorted = [...appointments].sort((a, b) => {
+      const valueA = getSortValue(a, sortColumn).toString().toLocaleUpperCase();
+      const valueB = getSortValue(b, sortColumn).toString().toLocaleUpperCase();
+      return valueA.localeCompare(valueB);
+    });
+    return sortDirection === 'asc' ? sorted : sorted.reverse();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appointments, sortColumn, sortDirection]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedAppointments.length / PAGE_SIZE));
+  const paginatedAppointments = sortedAppointments.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  const SortableHeader = ({ column, children, className = '' }) => (
+    <th className={`py-3.5 px-4 ${className}`}>
+      <button
+        onClick={() => handleSort(column)}
+        className="flex items-center gap-1 hover:text-black transition-colors uppercase"
+      >
+        {children}
+        {sortColumn === column && (
+          <span className="text-[10px]">{sortDirection === 'asc' ? '▲' : '▼'}</span>
+        )}
+      </button>
+    </th>
+  );
 
   const handleLogoUpload = (e) => {
     const file = e.target.files[0];
@@ -326,6 +412,22 @@ export default function AdminDashboard() {
   };
 
   const handleSaveLogo = () => persistLogo(logoUrl);
+
+  const handleSaveAgencyName = async () => {
+    if (!agencyName.trim()) {
+      alert('El nombre de la agencia no puede estar vacío.');
+      return;
+    }
+    setSavingAgencyName(true);
+    try {
+      await api.patch('/agencies/me', { name: agencyName.trim() });
+    } catch (err) {
+      console.error('Error al guardar el nombre de la agencia:', err);
+      alert(err.response?.data?.error || 'No se pudo guardar el nombre de la agencia.');
+    } finally {
+      setSavingAgencyName(false);
+    }
+  };
 
   const handleAddVideo = async () => {
     const trimmedUrl = newVideoUrl.trim();
@@ -499,31 +601,32 @@ export default function AdminDashboard() {
           <div className="hidden md:block border border-gray-200 rounded-xl overflow-x-auto shadow-sm">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-xs font-medium text-gray-400 uppercase">
-                  <th className="py-3.5 px-4">Cliente</th>
-                  <th className="py-3.5 px-4">Vehículo</th>
-                  <th className="py-3.5 px-4">Motivo</th>
-                  <th className="py-3.5 px-4">Horario</th>
-                  <th className="py-3.5 px-4">Asesor</th>
-                  <th className="py-3.5 px-4">Estado</th>
+                <tr className="border-b border-gray-200 text-xs font-medium text-gray-400">
+                  <SortableHeader column="clientName">Cliente</SortableHeader>
+                  <SortableHeader column="vehicle">Vehículo</SortableHeader>
+                  <SortableHeader column="reason">Motivo</SortableHeader>
+                  <SortableHeader column="datetime">Horario</SortableHeader>
+                  <SortableHeader column="advisor">Asesor</SortableHeader>
+                  <SortableHeader column="status">Estado</SortableHeader>
+                  <th className="py-3.5 px-4 text-center">Festejar</th>
                   <th className="py-3.5 px-4 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-sm">
                 {loadingAppointments ? (
                   <tr>
-                    <td colSpan="7" className="py-6 text-center text-gray-400">
+                    <td colSpan="8" className="py-6 text-center text-gray-400">
                       Cargando citas...
                     </td>
                   </tr>
-                ) : appointments.length === 0 ? (
+                ) : paginatedAppointments.length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="py-6 text-center text-gray-400">
+                    <td colSpan="8" className="py-6 text-center text-gray-400">
                       No hay citas programadas.
                     </td>
                   </tr>
                 ) : (
-                  appointments.map((item) => (
+                  paginatedAppointments.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                       <td className="py-4 px-4 font-semibold text-black">{item.clientName || 'N/A'}</td>
                       <td className="py-4 px-4">{formatVehicle(item.vehicle)}</td>
@@ -537,17 +640,25 @@ export default function AdminDashboard() {
                           {item.reason || 'N/A'}
                         </span>
                       </td>
-                      <td className="py-4 px-4 text-gray-600">{formatDate(item.datetime)}</td>
+                      <td className="py-4 px-4 text-gray-600">
+                        {item.status === 'open' ? 'Abierta' : formatDate(item.datetime)}
+                      </td>
                       <td className="py-4 px-4 text-gray-600">{item.advisor || 'N/A'}</td>
                       <td className="py-4 px-4">
                         <span
-                          className={`inline-block px-3 py-0.5 rounded-full text-xs font-medium border ${item.status === 'finished'
-                            ? 'bg-gray-50 text-gray-500 border-gray-200'
-                            : 'bg-white text-gray-800 border-gray-300'
-                            }`}
+                          className={`inline-block px-3 py-0.5 rounded-full text-xs font-medium border ${STATUS_BADGE_CLASSES[item.status] || DEFAULT_STATUS_BADGE_CLASSES}`}
                         >
                           {STATUS_LABELS[item.status] || item.status}
                         </span>
+                      </td>
+                      <td className="py-4 px-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={item.celebrate}
+                          onChange={(e) => handleToggleCelebrate(item, e.target.checked)}
+                          title="Disparar animación de celebración en el tablero"
+                          className="w-4 h-4 accent-black cursor-pointer"
+                        />
                       </td>
                       <td className="py-4 px-4 text-right">
                         <div className="flex items-center justify-end gap-3 text-gray-400">
@@ -582,25 +693,33 @@ export default function AdminDashboard() {
           <div className="md:hidden flex flex-col gap-3">
             {loadingAppointments ? (
               <p className="text-center text-gray-400 py-6">Cargando citas...</p>
-            ) : appointments.length === 0 ? (
+            ) : paginatedAppointments.length === 0 ? (
               <p className="text-center text-gray-400 py-6">No hay citas programadas.</p>
             ) : (
-              appointments.map((item) => (
+              paginatedAppointments.map((item) => (
                 <div key={item.id} className="border border-gray-200 rounded-xl p-4 shadow-sm">
                   <div className="flex justify-between items-start mb-2">
                     <span className="font-semibold text-black">{item.clientName || 'N/A'}</span>
                     <span
-                      className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${item.status === 'finished'
-                        ? 'bg-gray-50 text-gray-500 border-gray-200'
-                        : 'bg-white text-gray-800 border-gray-300'
-                        }`}
+                      className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${STATUS_BADGE_CLASSES[item.status] || DEFAULT_STATUS_BADGE_CLASSES}`}
                     >
                       {STATUS_LABELS[item.status] || item.status}
                     </span>
                   </div>
                   <p className="text-sm text-gray-600">{formatVehicle(item.vehicle)}</p>
                   <p className="text-sm text-gray-600">{item.reason || 'N/A'}</p>
-                  <p className="text-sm text-gray-600">{formatDate(item.datetime)} · {item.advisor || 'N/A'}</p>
+                  <p className="text-sm text-gray-600">
+                    {item.status === 'open' ? 'Abierta' : formatDate(item.datetime)} · {item.advisor || 'N/A'}
+                  </p>
+                  <label className="flex items-center gap-2 mt-2 text-xs text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={item.celebrate}
+                      onChange={(e) => handleToggleCelebrate(item, e.target.checked)}
+                      className="w-4 h-4 accent-black cursor-pointer"
+                    />
+                    Festejar
+                  </label>
                   <div className="flex items-center gap-4 mt-3 text-gray-400">
                     <button onClick={() => handleOpenModal(item)} className="text-xs font-semibold hover:text-black transition-colors">
                       Editar
@@ -613,12 +732,58 @@ export default function AdminDashboard() {
               ))
             )}
           </div>
+
+          {/* Paginación */}
+          {!loadingAppointments && sortedAppointments.length > 0 && (
+            <div className="flex items-center justify-between mt-4 text-sm text-gray-500">
+              <span>
+                Página {currentPage} de {totalPages} · {sortedAppointments.length} citas
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Anterior
+                </button>
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </section>
         )}
 
         {/* PESTAÑA: CONFIGURACIÓN */}
         {activeTab === 'configuracion' && isAdmin && (
         <section className="max-w-4xl mx-auto border border-gray-200 rounded-xl p-8 shadow-sm">
+          <div className="mb-8">
+            <h3 className="text-base font-bold mb-1">Nombre de la agencia</h3>
+            <p className="text-sm text-gray-500 mb-4">Este nombre se usa para identificar tu cuenta y se mostrará en el panel.</p>
+            <div className="flex items-center gap-2 max-w-md">
+              <input
+                type="text"
+                value={agencyName}
+                onChange={(e) => setAgencyName(e.target.value)}
+                placeholder="Nombre de la agencia"
+                className="flex-1 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:border-black"
+              />
+              <button
+                onClick={handleSaveAgencyName}
+                disabled={savingAgencyName}
+                className="bg-black hover:bg-gray-800 text-white font-medium px-4 py-2.5 rounded-lg text-sm transition-colors disabled:opacity-50 whitespace-nowrap"
+              >
+                {savingAgencyName ? 'Guardando...' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+
           <div className="mb-8">
             <h3 className="text-base font-bold mb-1">Logo de la empresa</h3>
             <p className="text-sm text-gray-500 mb-4">Sube el logo que se mostrará en la pantalla principal.</p>
@@ -981,8 +1146,9 @@ export default function AdminDashboard() {
                     onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                     className="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:border-black bg-white"
                   >
-                    <option value="waiting">Activa / En espera</option>
-                    <option value="in_service">En atención</option>
+                    <option value="waiting">Programada</option>
+                    <option value="in_service">Activa</option>
+                    <option value="open">Abierta</option>
                     <option value="finished">Completada</option>
                     <option value="canceled">Cancelada</option>
                   </select>
@@ -990,15 +1156,18 @@ export default function AdminDashboard() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold mb-1">Horario</label>
-                  <AppointmentDateTimePicker
-                    value={formData.datetime}
-                    onChange={(newIsoDate) =>
-                      setFormData((prev) => ({ ...prev, datetime: newIsoDate }))
-                    }
-                  />
-                </div>
+                {/* Las citas "Abiertas" no llevan horario asignado (walk-in) */}
+                {formData.status !== 'open' && (
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Horario</label>
+                    <AppointmentDateTimePicker
+                      value={formData.datetime}
+                      onChange={(newIsoDate) =>
+                        setFormData((prev) => ({ ...prev, datetime: newIsoDate }))
+                      }
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs font-semibold mb-1">Asesor</label>
                   <select

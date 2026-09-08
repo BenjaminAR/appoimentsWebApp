@@ -27,7 +27,7 @@ export default function Login() {
             });
 
             login(meResponse.data.user, idToken);
-            navigate('/dashboard');
+            navigate('/admin-dashboard');
         } catch (err) {
             setError(
                 err.response?.data?.error ||

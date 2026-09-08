@@ -28,7 +28,7 @@ export default function Register() {
       const { idToken, user } = response.data;
 
       login(user, idToken);
-      navigate('/dashboard');
+      navigate('/admin-dashboard');
     } catch (err) {
       setError(
         err.response?.data?.error || 

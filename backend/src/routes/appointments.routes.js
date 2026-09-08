@@ -16,7 +16,7 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 const MX_TIMEZONE = 'America/Mexico_City';
-const STATUS_ENUM = ['waiting', 'in_service', 'finished', 'canceled'];
+const STATUS_ENUM = ['waiting', 'in_service', 'open', 'finished', 'canceled'];
 
 // Convierte un valor de fecha/hora (ya validado por dayjs) a un ISO string con el offset local de México,
 // sin depender de la zona horaria del contenedor Docker (que normalmente corre en UTC).
@@ -58,7 +58,7 @@ router.get('/display-board', async (req, res, next) => {
   try {
     const snapshot = await db.collection('appointments')
       .where('agencyId', '==', req.user.agencyId)
-      .where('status', 'in', ['waiting', 'in_service'])
+      .where('status', 'in', ['waiting', 'in_service', 'open'])
       .get();
 
     const now = dayjs().tz(MX_TIMEZONE);
@@ -84,15 +84,18 @@ router.get('/display-board', async (req, res, next) => {
           activity: data.activity || data.serviceReason || 'SERVICIO GENERAL'
         };
       })
-      // Regla de negocio: el tablero solo muestra citas del día en curso (hora local de México)
+      // Regla de negocio: el tablero solo muestra citas con horario del día en curso (hora local de México).
+      // Las citas "open" no tienen scheduledTime (son walk-ins sin fecha) y deben mostrarse siempre
+      // mientras sigan abiertas, sin filtrarlas por fecha de creación.
       .filter(a => {
-        const scheduled = dayjs(a.scheduledTime).tz(MX_TIMEZONE);
-        return scheduled.isAfter(todayStart) && scheduled.isBefore(todayEnd);
+        if (a.status === 'open') return true;
+        const referenceDate = dayjs(a.scheduledTime).tz(MX_TIMEZONE);
+        return referenceDate.isAfter(todayStart) && referenceDate.isBefore(todayEnd);
       })
-      .sort((a, b) => dayjs(a.scheduledTime).valueOf() - dayjs(b.scheduledTime).valueOf());
+      .sort((a, b) => dayjs(a.scheduledTime || a.createdAt).valueOf() - dayjs(b.scheduledTime || b.createdAt).valueOf());
 
     const currentAppointment = appointments.find(a => a.status === 'in_service') || null;
-    const nextAppointments = appointments.filter(a => a.status === 'waiting').slice(0, 6);
+    const nextAppointments = appointments.filter(a => a.status === 'waiting' || a.status === 'open').slice(0, 6);
 
     res.json({ agencyId: req.user.agencyId, currentAppointment, nextAppointments });
   } catch (error) {
@@ -193,10 +196,18 @@ router.get('/', async (req, res, next) => {
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { date, time, activity, advisorName, clientName, make, model } = req.body;
+    const { date, time, activity, advisorName, clientName, make, model, status } = req.body;
+
+    if (status !== undefined && !STATUS_ENUM.includes(status)) {
+      return res.status(400).json({ error: `status inválido. Valores permitidos: ${STATUS_ENUM.join(', ')}` });
+    }
+
+    const cleanStatus = status || 'waiting';
+    // Las citas "abiertas" no tienen horario asignado (walk-in), por lo que date/time dejan de ser obligatorios
+    const requiresSchedule = cleanStatus !== 'open';
 
     if (
-      !date || !time ||
+      (requiresSchedule && (!date || !time)) ||
       !String(activity || '').trim() ||
       !String(advisorName || '').trim() ||
       !String(clientName || '').trim() ||
@@ -232,14 +243,17 @@ router.post('/', async (req, res, next) => {
     // 3. Insertar en Firestore
     // Soporta ambos formatos de entrada (DD/MM/YYYY o YYYY-MM-DD) usando parseo estricto de dayjs
     // en lugar de `new Date(...)`, evitando RangeError por fechas corruptas.
-    const parsedDate = dayjs(`${date} ${time}`, ['DD/MM/YYYY HH:mm', 'YYYY-MM-DD HH:mm'], true);
+    let scheduledTime = null;
+    if (requiresSchedule) {
+      const parsedDate = dayjs(`${date} ${time}`, ['DD/MM/YYYY HH:mm', 'YYYY-MM-DD HH:mm'], true);
 
-    if (!parsedDate.isValid()) {
-      return res.status(400).json({ error: 'El formato de fecha u hora es inválido.' });
+      if (!parsedDate.isValid()) {
+        return res.status(400).json({ error: 'El formato de fecha u hora es inválido.' });
+      }
+
+      // Conserva el offset local de México (-06:00) sin depender de la zona horaria del contenedor
+      scheduledTime = toMexicoISOString(parsedDate);
     }
-
-    // Conserva el offset local de México (-06:00) sin depender de la zona horaria del contenedor
-    const scheduledTime = toMexicoISOString(parsedDate);
 
     const newAppointment = {
       agencyId: req.user.agencyId,
@@ -251,7 +265,8 @@ router.post('/', async (req, res, next) => {
         model: cleanModel
       },
       scheduledTime,
-      status: 'waiting',
+      status: cleanStatus,
+      celebrate: false,
       createdAt: new Date().toISOString()
     };
 
@@ -380,7 +395,8 @@ router.put('/:id', async (req, res, next) => {
       vehicle,
       date,
       time,
-      scheduledTime
+      scheduledTime,
+      celebrate
     } = req.body;
 
     const updateData = {
@@ -412,6 +428,12 @@ router.put('/:id', async (req, res, next) => {
       }
       updateData.status = status;
     }
+    if (celebrate !== undefined) {
+      if (typeof celebrate !== 'boolean') {
+        return res.status(400).json({ error: 'celebrate debe ser un valor booleano.' });
+      }
+      updateData.celebrate = celebrate;
+    }
 
     // Manejo de fecha y hora (siempre se conserva el offset local de México, -06:00)
     if (scheduledTime) {
@@ -429,6 +451,9 @@ router.put('/:id', async (req, res, next) => {
       }
 
       updateData.scheduledTime = toMexicoISOString(parsedDate);
+    } else if (status === 'open') {
+      // Una cita que pasa a "abierta" ya no tiene horario asignado (walk-in)
+      updateData.scheduledTime = null;
     }
 
     // Normalización de la estructura del vehículo (por mapa o campos individuales)

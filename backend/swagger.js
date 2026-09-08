@@ -28,11 +28,11 @@ const options = {
       schemas: {
         RegisterInput: {
           type: 'object',
-          required: ['email', 'password', 'agencyId', 'role'],
+          required: ['email', 'password'],
           properties: {
             email: { type: 'string', example: 'asesor@amsa.com' },
             password: { type: 'string', example: 'Password123!' },
-            agencyId: { type: 'string', example: 'AMSA' },
+            agencyName: { type: 'string', example: 'Agencia Motors S.A.' },
             role: { type: 'string', example: 'advisor' },
           },
         },

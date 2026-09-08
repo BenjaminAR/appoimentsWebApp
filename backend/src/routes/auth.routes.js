@@ -6,12 +6,21 @@ const requireRole = require('../middlewares/roleMiddleware');
 const validateAgencyScope = require('../middlewares/agencyAccessMiddleware');
 const axios = require('axios');
 
+// Genera un agencyId corto y único para que el usuario no tenga que capturarlo al registrarse
+async function generateUniqueAgencyId() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = `AG-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const doc = await db.collection('agencies').doc(candidate).get();
+    if (!doc.exists) return candidate;
+  }
+  throw new Error('No se pudo generar un ID de agencia único. Intenta de nuevo.');
+}
 
 /**
  * @openapi
  * /auth/register:
  *   post:
- *     summary: Registrar una nueva agencia y su usuario administrador inicial
+ *     summary: Registrar una nueva agencia (ID autogenerado) y su usuario administrador inicial
  *     tags:
  *       - Autenticación
  *     security: []
@@ -24,8 +33,6 @@ const axios = require('axios');
  *             required:
  *               - email
  *               - password
- *               - agencyId
- *               - agencyName
  *             properties:
  *               email:
  *                 type: string
@@ -33,11 +40,9 @@ const axios = require('axios');
  *               password:
  *                 type: string
  *                 example: "Password123!"
- *               agencyId:
- *                 type: string
- *                 example: "AMSA"
  *               agencyName:
  *                 type: string
+ *                 description: Opcional. Puede configurarse después desde el panel de administración.
  *                 example: "Agencia Motors S.A."
  *               role:
  *                 type: string
@@ -46,39 +51,32 @@ const axios = require('axios');
  *       201:
  *         description: Agencia y usuario registrados exitosamente con periodo de prueba activo.
  *       400:
- *         description: La agencia o el correo ya se encuentran registrados.
+ *         description: Faltan campos obligatorios o el correo ya está registrado.
  */
 router.post('/register', async (req, res, next) => {
   try {
-    const { email, password, agencyId, agencyName, role } = req.body;
+    const { email, password, agencyName, role } = req.body;
 
-    if (!email || !password || !agencyId || !agencyName) {
-      return res.status(400).json({ 
-        error: 'Los campos email, password, agencyId y agencyName son obligatorios.' 
+    if (!email || !password) {
+      return res.status(400).json({
+        error: 'Los campos email y password son obligatorios.'
       });
     }
 
-    const cleanAgencyId = agencyId.toUpperCase().trim();
+    // El agencyId ya no lo captura el usuario: se genera automáticamente y de forma única
+    const cleanAgencyId = await generateUniqueAgencyId();
+    // El nombre de la agencia se pregunta después en Admin Dashboard > Configuración de agencia
+    const cleanAgencyName = (agencyName || 'Mi Agencia').trim() || 'Mi Agencia';
 
-    // 1. Verificar si la agencia ya existe en Firestore
-    const agencyRef = db.collection('agencies').doc(cleanAgencyId);
-    const agencyDoc = await agencyRef.get();
-
-    if (agencyDoc.exists) {
-      return res.status(400).json({ 
-        error: `La agencia con ID "${cleanAgencyId}" ya está registrada.` 
-      });
-    }
-
-    // 2. Calcular fecha de fin de prueba (ejemplo: 30 días gratis)
+    // 1. Calcular fecha de fin de prueba (ejemplo: 30 días gratis)
     const trialDays = 30;
     const currentPeriodEnd = new Date();
     currentPeriodEnd.setDate(currentPeriodEnd.getDate() + trialDays);
 
-    // 3. Crear el documento de la agencia en Firestore con su suscripción inicial
+    // 2. Crear el documento de la agencia en Firestore con su suscripción inicial
     const newAgencyData = {
       agencyId: cleanAgencyId,
-      name: agencyName.trim(),
+      name: cleanAgencyName,
       createdAt: new Date().toISOString(),
       subscription: {
         status: 'active', // Estado activo por periodo de prueba (trial)
@@ -87,24 +85,42 @@ router.post('/register', async (req, res, next) => {
       }
     };
 
-    await agencyRef.set(newAgencyData);
+    await db.collection('agencies').doc(cleanAgencyId).set(newAgencyData);
 
-    // 4. Crear el usuario administrador en Firebase Authentication
+    // 3. Crear el usuario administrador en Firebase Authentication
     const userRecord = await admin.auth().createUser({
       email,
       password,
-      displayName: agencyName.trim()
+      displayName: cleanAgencyName
     });
 
-    // 5. Asignar Custom Claims al JWT (Agencia y Rol)
+    // 4. Asignar Custom Claims al JWT (Agencia y Rol)
     const userRole = role || 'admin';
     await admin.auth().setCustomUserClaims(userRecord.uid, {
       agencyId: cleanAgencyId,
       role: userRole
     });
 
+    // 5. Iniciar sesión de inmediato (igual que /auth/login) para entregar un idToken real al cliente
+    const apiKey = process.env.FIREBASE_WEB_API_KEY;
+    const signInResponse = await axios.post(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+      { email, password, returnSecureToken: true }
+    );
+    const { idToken, refreshToken, expiresIn } = signInResponse.data;
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/api/auth/refresh',
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
+
     res.status(201).json({
       message: 'Agencia y usuario administrador creados exitosamente.',
+      idToken,
+      expiresIn,
       agency: newAgencyData,
       user: {
         uid: userRecord.uid,

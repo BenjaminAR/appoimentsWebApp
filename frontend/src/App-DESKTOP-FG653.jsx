@@ -38,7 +38,7 @@ export default function App() {
 
           {/* Rutas Protegidas (Cualquier usuario autenticado) */}
           <Route element={<ProtectedRoute />}>
-            <Route path="/admin-dashboard" element={<AdminDashboard />} />
+            {/* <Route path="/dashboard" element={<Dashboard />} /> */}
             <Route path="/display-board" element={<DisplayBoard />} />
           </Route>
 
@@ -49,7 +49,7 @@ export default function App() {
           </Route>
 
           {/* Redirección por defecto */}
-          <Route path="*" element={<Navigate to="/admin-dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/display-board" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

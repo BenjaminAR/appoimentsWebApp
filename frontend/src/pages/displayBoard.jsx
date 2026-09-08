@@ -13,6 +13,8 @@ const socket = io(SOCKET_URL);
 const DELIVERY_ACTIVITY = 'ENTREGA DE UNIDAD';
 const CELEBRATION_DURATION_MS = 5 * 60 * 1000; // 5 minutos
 const CONFETTI_INTERVAL_MS = 350;
+const NEXT_VISIBLE_COUNT = 4;
+const NEXT_ROTATION_INTERVAL_MS = 6000;
 
 export default function DisplayBoard() {
   const [boardData, setBoardData] = useState({ currentAppointment: null, nextAppointments: [] });
@@ -22,7 +24,10 @@ export default function DisplayBoard() {
   const [agencyLogo, setAgencyLogo] = useState(null);
   const [ytApiReady, setYtApiReady] = useState(false);
   const [showDeliveryOverlay, setShowDeliveryOverlay] = useState(false);
+  const [celebratingAppointment, setCelebratingAppointment] = useState(null);
+  const [nextPageIndex, setNextPageIndex] = useState(0);
   const lastCelebratedIdRef = useRef(null);
+  const manualCelebrateInFlightRef = useRef(new Set());
   const celebrationHideTimeoutRef = useRef(null);
   const celebrationConfettiIntervalRef = useRef(null);
   const playerRef = useRef(null);
@@ -123,6 +128,27 @@ export default function DisplayBoard() {
 
   // Evento especial: entrega de unidad -> overlay de celebración cuando la cita pasa a "in_service"
   // Los timers viven en refs para no cortarse cuando boardData se refresca por polling/sockets.
+  const triggerCelebration = useCallback((appointment) => {
+    setCelebratingAppointment(appointment);
+    setShowDeliveryOverlay(true);
+
+    if (celebrationConfettiIntervalRef.current) clearInterval(celebrationConfettiIntervalRef.current);
+    if (celebrationHideTimeoutRef.current) clearTimeout(celebrationHideTimeoutRef.current);
+
+    // Confeti constante durante toda la celebración
+    celebrationConfettiIntervalRef.current = setInterval(() => {
+      confetti({ particleCount: 5, angle: 60, spread: 70, origin: { x: 0 }, colors: ['#F4C22B', '#15171B', '#EEF0F2'] });
+      confetti({ particleCount: 5, angle: 120, spread: 70, origin: { x: 1 }, colors: ['#F4C22B', '#15171B', '#EEF0F2'] });
+    }, CONFETTI_INTERVAL_MS);
+
+    celebrationHideTimeoutRef.current = setTimeout(() => {
+      setShowDeliveryOverlay(false);
+      setCelebratingAppointment(null);
+      clearInterval(celebrationConfettiIntervalRef.current);
+      celebrationConfettiIntervalRef.current = null;
+    }, CELEBRATION_DURATION_MS);
+  }, []);
+
   useEffect(() => {
     const current = boardData.currentAppointment;
     if (
@@ -132,24 +158,27 @@ export default function DisplayBoard() {
       lastCelebratedIdRef.current !== current.id
     ) {
       lastCelebratedIdRef.current = current.id;
-      setShowDeliveryOverlay(true);
-
-      if (celebrationConfettiIntervalRef.current) clearInterval(celebrationConfettiIntervalRef.current);
-      if (celebrationHideTimeoutRef.current) clearTimeout(celebrationHideTimeoutRef.current);
-
-      // Confeti constante durante toda la celebración
-      celebrationConfettiIntervalRef.current = setInterval(() => {
-        confetti({ particleCount: 5, angle: 60, spread: 70, origin: { x: 0 }, colors: ['#F4C22B', '#15171B', '#EEF0F2'] });
-        confetti({ particleCount: 5, angle: 120, spread: 70, origin: { x: 1 }, colors: ['#F4C22B', '#15171B', '#EEF0F2'] });
-      }, CONFETTI_INTERVAL_MS);
-
-      celebrationHideTimeoutRef.current = setTimeout(() => {
-        setShowDeliveryOverlay(false);
-        clearInterval(celebrationConfettiIntervalRef.current);
-        celebrationConfettiIntervalRef.current = null;
-      }, CELEBRATION_DURATION_MS);
+      triggerCelebration(current);
     }
-  }, [boardData.currentAppointment]);
+  }, [boardData.currentAppointment, triggerCelebration]);
+
+  // Festejo manual: el admin marca el checkbox "Festejar" de una cita (típicamente una "abierta")
+  // y el tablero dispara la misma animación, luego restablece el flag para permitir volver a usarlo.
+  useEffect(() => {
+    const candidates = [boardData.currentAppointment, ...boardData.nextAppointments].filter(Boolean);
+    const toCelebrate = candidates.find(
+      (item) => item.celebrate === true && !manualCelebrateInFlightRef.current.has(item.id)
+    );
+
+    if (toCelebrate) {
+      manualCelebrateInFlightRef.current.add(toCelebrate.id);
+      triggerCelebration(toCelebrate);
+
+      api.put(`/appointments/${toCelebrate.id}`, { celebrate: false })
+        .catch((error) => console.error('No se pudo restablecer el festejo manual:', error))
+        .finally(() => manualCelebrateInFlightRef.current.delete(toCelebrate.id));
+    }
+  }, [boardData, triggerCelebration]);
 
   // Limpieza de timers de la celebración solo al desmontar el componente
   useEffect(() => {
@@ -168,11 +197,13 @@ export default function DisplayBoard() {
     return '';
   };
 
-  // Helper para formatear la hora ISO recibida de la API
-  const formatScheduledTime = (isoString) => {
-    if (!isoString) return '--:--';
+  // Helper para formatear la hora ISO recibida de la API (las citas "abiertas" no tienen horario)
+  const formatScheduledTime = (item) => {
+    if (!item) return '--:--';
+    if (item.status === 'open') return 'Abierta';
+    if (!item.scheduledTime) return '--:--';
     try {
-      const date = new Date(isoString);
+      const date = new Date(item.scheduledTime);
       return date.toLocaleTimeString('es-MX', {
         hour: '2-digit',
         minute: '2-digit',
@@ -265,6 +296,25 @@ export default function DisplayBoard() {
   const { currentAppointment, nextAppointments } = boardData;
   // Modo teatro: no hay cita en curso ni citas pendientes para hoy
   const isTheaterMode = !currentAppointment && nextAppointments.length === 0;
+  // En vez de scroll: si hay más citas que espacio disponible, se rotan en páginas fijas
+  const nextTotalPages = Math.max(1, Math.ceil(nextAppointments.length / NEXT_VISIBLE_COUNT));
+  const visibleNextAppointments = nextAppointments.slice(
+    nextPageIndex * NEXT_VISIBLE_COUNT,
+    nextPageIndex * NEXT_VISIBLE_COUNT + NEXT_VISIBLE_COUNT
+  );
+
+  useEffect(() => {
+    setNextPageIndex(0); // evita quedar en una página vacía cuando la lista cambia de tamaño
+  }, [nextAppointments.length]);
+
+  useEffect(() => {
+    if (nextAppointments.length <= NEXT_VISIBLE_COUNT) return;
+    const timer = setInterval(() => {
+      setNextPageIndex((prev) => (prev + 1) % nextTotalPages);
+    }, NEXT_ROTATION_INTERVAL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextAppointments.length, nextTotalPages]);
 
   return (
     <div className="min-h-screen bg-[#EEF0F2] dark:bg-[#101216] text-[#15171B] dark:text-[#F2F3F5] font-sans transition-colors duration-300 p-7 lg:px-10 lg:py-9 flex flex-col justify-between">
@@ -355,7 +405,7 @@ export default function DisplayBoard() {
                 >
                   <div className="flex flex-col items-center justify-center gap-1.5 p-4">
                     <span className="bg-[#15171B] dark:bg-[#101216] text-[#EEF0F2] font-mono text-sm xl:text-lg font-semibold tracking-[0.5px] px-2 py-1 rounded-md text-center">
-                      {formatScheduledTime(currentAppointment.scheduledTime)}
+                      {formatScheduledTime(currentAppointment)}
                     </span>
                   </div>
                   <div className="p-4 border-l border-[#E1E4E8] dark:border-[#2B2F36] relative">
@@ -396,9 +446,9 @@ export default function DisplayBoard() {
               SIGUIENTES CITAS.
             </div>
             <div className="flex flex-col gap-3">
-              <AnimatePresence>
-                {nextAppointments.length > 0 ? (
-                  nextAppointments.map((item) => (
+              <AnimatePresence mode="popLayout">
+                {visibleNextAppointments.length > 0 ? (
+                  visibleNextAppointments.map((item) => (
                     <motion.div
                       key={item.id}
                       layout
@@ -410,7 +460,7 @@ export default function DisplayBoard() {
                     >
                       <div className="flex flex-col items-center justify-center gap-1.5 p-4">
                         <span className="bg-[#15171B] dark:bg-[#101216] text-[#EEF0F2] font-mono text-sm xl:text-lg font-semibold tracking-[0.5px] px-2 py-1 rounded-md text-center">
-                          {formatScheduledTime(item.scheduledTime)}
+                          {formatScheduledTime(item)}
                         </span>
                       </div>
                       <div className="p-4 border-l border-[#E1E4E8] dark:border-[#2B2F36]">
@@ -441,6 +491,17 @@ export default function DisplayBoard() {
                   </motion.div>
                 )}
               </AnimatePresence>
+              {/* En lugar de una barra de scroll, las citas sobrantes rotan automáticamente en páginas fijas */}
+              {nextAppointments.length > NEXT_VISIBLE_COUNT && (
+                <div className="flex justify-center gap-1.5 mt-1">
+                  {Array.from({ length: nextTotalPages }).map((_, idx) => (
+                    <span
+                      key={idx}
+                      className={`w-1.5 h-1.5 rounded-full transition-colors ${idx === nextPageIndex ? 'bg-[#F4C22B]' : 'bg-[#767C87]/30'}`}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -457,9 +518,9 @@ export default function DisplayBoard() {
         <p>Automotores de México © 2026 · Todos los derechos reservados</p>
       </footer>
 
-      {/* Overlay de celebración: Entrega de unidad */}
+      {/* Overlay de celebración: Entrega de unidad o festejo manual desde el dashboard */}
       <AnimatePresence>
-        {showDeliveryOverlay && currentAppointment && (
+        {showDeliveryOverlay && celebratingAppointment && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -475,9 +536,9 @@ export default function DisplayBoard() {
               <h2 className="font-oswald text-4xl xl:text-6xl font-bold text-white tracking-wide mb-3">
                 ¡ENTREGA DE UNIDAD!
               </h2>
-              <p className="text-xl xl:text-3xl text-[#F2F3F5] mb-1">{currentAppointment.clientName}</p>
+              <p className="text-xl xl:text-3xl text-[#F2F3F5] mb-1">{celebratingAppointment.clientName}</p>
               <p className="text-lg xl:text-2xl text-[#F4C22B] font-semibold">
-                {currentAppointment.vehicle?.make} {currentAppointment.vehicle?.model}
+                {celebratingAppointment.vehicle?.make} {celebratingAppointment.vehicle?.model}
               </p>
             </motion.div>
           </motion.div>
