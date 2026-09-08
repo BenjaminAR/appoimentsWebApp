@@ -72,6 +72,9 @@ export default function AdminDashboard() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [savingLogo, setSavingLogo] = useState(false);
   const [deletingVideoId, setDeletingVideoId] = useState(null);
+  const [newActivityName, setNewActivityName] = useState('');
+  const [savingActivity, setSavingActivity] = useState(false);
+  const [deletingActivityId, setDeletingActivityId] = useState(null);
 
   const MAX_VIDEOS = 100;
 
@@ -95,6 +98,7 @@ export default function AdminDashboard() {
     fetchConfig();
     if (isAdmin) {
       fetchAdvisors();
+      fetchActivities();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -464,6 +468,39 @@ export default function AdminDashboard() {
       alert(err.response?.data?.error || 'No se pudo eliminar el video.');
     } finally {
       setDeletingVideoId(null);
+    }
+  };
+
+  const handleAddActivity = async () => {
+    const trimmedName = newActivityName.trim();
+    if (!trimmedName) {
+      alert('Escribe un nombre para el motivo de visita.');
+      return;
+    }
+    setSavingActivity(true);
+    try {
+      await api.post('/catalogs/activities', { name: trimmedName });
+      setNewActivityName('');
+      fetchActivities();
+    } catch (err) {
+      console.error('Error al guardar el motivo de visita:', err);
+      alert(err.response?.data?.error || 'No se pudo guardar el motivo de visita.');
+    } finally {
+      setSavingActivity(false);
+    }
+  };
+
+  const handleDeleteActivity = async (id) => {
+    if (!window.confirm('¿Eliminar este motivo de visita?')) return;
+    setDeletingActivityId(id);
+    try {
+      await api.delete(`/catalogs/activities/${id}`);
+      fetchActivities();
+    } catch (err) {
+      console.error('Error al eliminar el motivo de visita:', err);
+      alert(err.response?.data?.error || 'No se pudo eliminar el motivo de visita.');
+    } finally {
+      setDeletingActivityId(null);
     }
   };
 
@@ -883,6 +920,60 @@ export default function AdminDashboard() {
                       </button>
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-8 pt-8 border-t border-gray-100">
+            <h3 className="text-base font-bold mb-1">Motivos de visita</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              Estos motivos aparecen en el selector "Motivo de visita" al crear una cita. "ENTREGA DE UNIDAD"
+              se agrega automáticamente al registrar la agencia (activa la animación de celebración en el tablero).
+            </p>
+
+            <div className="flex gap-2 mb-4 max-w-md">
+              <input
+                type="text"
+                value={newActivityName}
+                onChange={(e) => setNewActivityName(e.target.value)}
+                placeholder="Ej. PRUEBA DE MANEJO"
+                className="flex-1 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:border-black"
+              />
+              <button
+                onClick={handleAddActivity}
+                disabled={savingActivity}
+                className="bg-black hover:bg-gray-800 text-white font-medium px-4 py-2.5 rounded-lg text-sm transition-colors disabled:opacity-50 whitespace-nowrap"
+              >
+                {savingActivity ? 'Agregando...' : 'Agregar'}
+              </button>
+            </div>
+
+            {loadingActivities ? (
+              <p className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-200 rounded-lg">
+                Cargando motivos...
+              </p>
+            ) : activities.length === 0 ? (
+              <p className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-200 rounded-lg">
+                No hay motivos de visita configurados.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {activities.map((item) => (
+                  <span
+                    key={item.id}
+                    className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 text-xs font-semibold px-3 py-1.5 rounded-full"
+                  >
+                    {item.name}
+                    <button
+                      onClick={() => handleDeleteActivity(item.id)}
+                      disabled={deletingActivityId === item.id}
+                      className="text-gray-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                      title="Eliminar motivo"
+                    >
+                      ×
+                    </button>
+                  </span>
                 ))}
               </div>
             )}

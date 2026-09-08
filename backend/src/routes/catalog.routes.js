@@ -207,6 +207,44 @@ router.post('/activities', async (req, res, next) => {
   }
 });
 
+/**
+ * @openapi
+ * /catalogs/activities/{id}:
+ *   delete:
+ *     summary: Eliminar una actividad (motivo de visita) de la agencia actual
+ *     tags:
+ *       - Catálogos
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Actividad eliminada correctamente.
+ *       404:
+ *         description: Actividad no encontrada o no pertenece a la agencia.
+ */
+router.delete('/activities/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const docRef = db.collection('activities').doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists || doc.data().agencyId !== req.user.agencyId) {
+      return res.status(404).json({ error: 'Actividad no encontrada.' });
+    }
+
+    await docRef.delete();
+    res.json({ message: 'Actividad eliminada correctamente.', id });
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 //Catalogos de vehiculos.
 

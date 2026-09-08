@@ -87,6 +87,13 @@ router.post('/register', async (req, res, next) => {
 
     await db.collection('agencies').doc(cleanAgencyId).set(newAgencyData);
 
+    // 2.1 Sembrar el motivo de visita "ENTREGA DE UNIDAD", requerido por la animación de celebración
+    await db.collection('activities').add({
+      name: 'ENTREGA DE UNIDAD',
+      agencyId: cleanAgencyId,
+      createdAt: new Date().toISOString()
+    });
+
     // 3. Crear el usuario administrador en Firebase Authentication
     const userRecord = await admin.auth().createUser({
       email,

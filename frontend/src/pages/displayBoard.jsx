@@ -8,13 +8,23 @@ import api from '../services/api';
 // Deriva la URL del socket a partir de la misma variable de entorno usada por la API REST,
 // para no romper la conexión en Docker/producción cuando el backend no está en localhost:4000
 const SOCKET_URL = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/api\/?$/, '');
-const socket = io(SOCKET_URL);
+// 'websocket' + 'polling' evita que un reverse proxy que no reenvíe correctamente el upgrade de
+// WebSocket (común en producción) deje al cliente sin ninguna forma de recibir eventos en tiempo real
+const socket = io(SOCKET_URL, {
+  transports: ['websocket', 'polling'],
+  reconnection: true,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+});
 
 const DELIVERY_ACTIVITY = 'ENTREGA DE UNIDAD';
 const CELEBRATION_DURATION_MS = 5 * 60 * 1000; // 5 minutos
 const CONFETTI_INTERVAL_MS = 350;
 const NEXT_VISIBLE_COUNT = 4;
 const NEXT_ROTATION_INTERVAL_MS = 6000;
+// Red de seguridad: si el WebSocket falla o se cae en producción, esto garantiza que el tablero
+// nunca quede desincronizado por más de este tiempo.
+const FALLBACK_POLLING_INTERVAL_MS = 20000;
 
 export default function DisplayBoard() {
   const [boardData, setBoardData] = useState({ currentAppointment: null, nextAppointments: [] });
@@ -112,17 +122,36 @@ export default function DisplayBoard() {
     fetchAgencyProfile();
   }, [fetchBoardData, fetchVideos, fetchAgencyProfile]);
 
-  // 3. Escuchar actualizaciones en tiempo real vía Socket.io
+  // Red de seguridad: refresca periódicamente aunque el WebSocket falle o el proxy de producción
+  // no soporte el upgrade correctamente, para que nunca quede desincronizado por mucho tiempo.
+  useEffect(() => {
+    const interval = setInterval(fetchBoardData, FALLBACK_POLLING_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchBoardData]);
+
+  // 3. Escuchar actualizaciones en tiempo real vía Socket.io (+ diagnóstico de conexión)
   useEffect(() => {
     const handleAppointmentsUpdated = (data) => {
       console.log('Evento de citas recibido vía WebSocket:', data);
       fetchBoardData();
     };
+    const handleConnect = () => {
+      console.log('Socket.IO conectado:', socket.id);
+      fetchBoardData(); // recupera cualquier cambio ocurrido mientras el socket estaba desconectado
+    };
+    const handleDisconnect = (reason) => console.warn('Socket.IO desconectado:', reason);
+    const handleConnectError = (err) => console.error('Socket.IO error de conexión:', err.message);
 
     socket.on('appointments_updated', handleAppointmentsUpdated);
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
 
     return () => {
       socket.off('appointments_updated', handleAppointmentsUpdated);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('connect_error', handleConnectError);
     };
   }, [fetchBoardData]);
 
